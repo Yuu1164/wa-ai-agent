@@ -1,1 +1,19 @@
-
+{
+  "name": "wa-ai-agent-tidb",
+  "version": "1.0.0",
+  "description": "AI Agent WhatsApp dengan Baileys Pairing Code, TiDB Serverless, dan Gemini API",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.16",
+    "dotenv": "^16.4.7",
+    "mysql2": "^3.11.5",
+    "pino": "^9.5.0"
+  }
+}
