@@ -7,7 +7,7 @@ AI Agent WhatsApp berbasis Node.js yang menggunakan **Baileys** (Pairing Code), 
 - **WhatsApp Baileys (Pairing Code)**: Terhubung ke WhatsApp tanpa perlu scan QR Code secara manual.
 - **Otak AI (Gemini API)**: Menggunakan model Gemini untuk membalas pesan secara kontekstual.
 - **Memori Percakapan & Auth State di TiDB Serverless**: Menyimpan kredensial sesi Baileys (`baileys_auth_state`) dan riwayat pesan terakhir (`MEMORY_LIMIT`) di database TiDB Serverless (MySQL-compatible).
-- **Pembuat Stiker**: Konversi media menjadi stiker WhatsApp menggunakan `ffmpeg-static` dan `node-webpmux`.
+- **Pembuat Stiker**: Konversi gambar (PNG/JPG/WebP) atau GIF/video pendek menjadi stiker WhatsApp menggunakan `ffmpeg-static` dan `node-webpmux`.
 - **HTTP Health Check Server**: Endpoint HTTP bawaan (default port `7860`) untuk kebutuhan monitoring status bot.
 - **Siap Docker**: Dilengkapi `Dockerfile` untuk kemudahan deployment.
 
@@ -32,8 +32,38 @@ wa-bot/
 ├── .dockerignore          # Daftar file yang diabaikan saat build Docker
 ├── .env.example           # Contoh konfigurasi environment variable
 ├── Dockerfile             # Konfigurasi container Docker
+├── LICENSE                # Lisensi proyek (MIT)
 ├── package.json
 └── README.md
+```
+
+## Skema Database (TiDB Serverless)
+
+Jalankan query SQL berikut pada database TiDB Serverless kamu (sesuai nilai `TIDB_DATABASE` di `.env`) sebelum menjalankan bot untuk pertama kali:
+
+```sql
+CREATE DATABASE IF NOT EXISTS wa_ai_bot;
+USE wa_ai_bot;
+
+-- Tabel untuk menyimpan sesi & kunci enkripsi Baileys
+CREATE TABLE IF NOT EXISTS baileys_auth_state (
+  session_id VARCHAR(100) NOT NULL,
+  data_key VARCHAR(255) NOT NULL,
+  data_value LONGTEXT NOT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (session_id, data_key)
+);
+
+-- Tabel untuk menyimpan memori percakapan per DM / Grup
+CREATE TABLE IF NOT EXISTS chat_memory (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  chat_jid VARCHAR(128) NOT NULL,
+  sender_name VARCHAR(120) NOT NULL,
+  role ENUM('user', 'model') NOT NULL,
+  message_text MEDIUMTEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_chat_memory_jid_created (chat_jid, created_at, id)
+);
 ```
 
 ## Instalasi & Menjalankan Secara Lokal
@@ -76,3 +106,7 @@ Project ini sudah menyertakan `Dockerfile` dan secara default menggunakan port `
 docker build -t wa-ai-agent .
 docker run -p 7860:7860 --env-file .env wa-ai-agent
 ```
+
+## Lisensi
+
+Proyek ini dilisensikan di bawah [MIT License](LICENSE).
