@@ -14,7 +14,7 @@ const STICKER_AUTHOR = process.env.STICKER_AUTHOR || 'BotPromeks';
 const MAX_ANIMATED_WEBP_BYTES = 500 * 1024;
 
 /**
- * Menjalankan binary ffmpeg-static dengan batas waktu maksimal 30 detik.
+ * Menjalankan binary ffmpeg-static dengan optimasi ramah CPU container kecil.
  */
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -22,12 +22,17 @@ function runFfmpeg(args) {
       return reject(new Error('Binary ffmpeg-static tidak ditemukan.'));
     }
 
-    execFile(ffmpegPath, args, { timeout: 30000 }, (error, _stdout, stderr) => {
-      if (error) {
-        return reject(new Error(`FFmpeg error: ${stderr || error.message}`));
+    execFile(
+      ffmpegPath,
+      args,
+      { timeout: 60000, maxBuffer: 10 * 1024 * 1024 },
+      (error, _stdout, stderr) => {
+        if (error) {
+          return reject(new Error(`FFmpeg error: ${stderr || error.message}`));
+        }
+        resolve();
       }
-      resolve();
-    });
+    );
   });
 }
 
@@ -63,10 +68,6 @@ async function attachStickerExif(webpBuffer, packName = STICKER_PACK_NAME, autho
 
 /**
  * Mengonversi buffer gambar (PNG/JPG/WebP) atau GIF/video pendek menjadi buffer Stiker WebP WhatsApp.
- * @param {Buffer} mediaBuffer - Data mentah media hasil unduhan dari Baileys
- * @param {object} options
- * @param {boolean} options.isAnimated - true jika sumber berupa GIF atau video pendek
- * @param {string} options.inputExt - Ekstensi sementara (misal 'png', 'jpg', 'gif', 'mp4')
  */
 async function createWhatsAppSticker(mediaBuffer, { isAnimated = false, inputExt = 'bin' } = {}) {
   const uniqueId = crypto.randomBytes(8).toString('hex');
@@ -79,36 +80,43 @@ async function createWhatsAppSticker(mediaBuffer, { isAnimated = false, inputExt
     await fs.writeFile(inputPath, mediaBuffer);
 
     if (isAnimated) {
-      // Konversi GIF/MP4 menjadi stiker animasi WebP 512x512 (maksimal 7 detik, 15 fps)
-      // Memakai format=rgba + pad transparan agar proporsi gambar tidak gepeng/terpotong
+      // Konversi GIF/MP4 -> stiker animasi WebP 512x512 (maksimal 6 detik, 12 fps, 1 thread agar tidak macet)
       await runFfmpeg([
+        '-nostdin',
         '-y',
+        '-loglevel', 'error',
+        '-threads', '1',
         '-i', inputPath,
-        '-t', '7',
+        '-t', '6',
         '-vcodec', 'libwebp',
-        '-vf', 'fps=15,scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000',
+        '-vf', 'fps=12,scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000',
         '-loop', '0',
         '-preset', 'default',
+        '-compression_level', '2',
         '-an',
-        '-vsync', '0',
+        '-fps_mode', 'vfr',
         '-q:v', '50',
         outputPath,
       ]);
 
       let webpBuffer = await fs.readFile(outputPath);
 
-      // Jika ukuran stiker animasi melebihi 500 KB, kompres otomatis agar tidak ditolak WhatsApp
+      // Jika ukuran stiker animasi melebihi 500 KB, kompres otomatis agar pasti diterima WhatsApp
       if (webpBuffer.length > MAX_ANIMATED_WEBP_BYTES) {
         await runFfmpeg([
+          '-nostdin',
           '-y',
+          '-loglevel', 'error',
+          '-threads', '1',
           '-i', inputPath,
           '-t', '5',
           '-vcodec', 'libwebp',
           '-vf', 'fps=10,scale=320:320:force_original_aspect_ratio=decrease,format=rgba,pad=320:320:(ow-iw)/2:(oh-ih)/2:color=#00000000',
           '-loop', '0',
           '-preset', 'default',
+          '-compression_level', '2',
           '-an',
-          '-vsync', '0',
+          '-fps_mode', 'vfr',
           '-q:v', '35',
           outputPath,
         ]);
@@ -117,17 +125,20 @@ async function createWhatsAppSticker(mediaBuffer, { isAnimated = false, inputExt
 
       return await attachStickerExif(webpBuffer);
     } else {
-      // Konversi PNG/JPG/WebP menjadi stiker statis 512x512 dengan menjaga transparansi PNG
+      // Konversi PNG/JPG/WebP -> stiker statis 512x512 (1 frame, 1 thread, cepat & menjaga transparansi PNG)
       await runFfmpeg([
+        '-nostdin',
         '-y',
+        '-loglevel', 'error',
+        '-threads', '1',
         '-i', inputPath,
+        '-frames:v', '1',
         '-vcodec', 'libwebp',
         '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000',
         '-lossless', '0',
-        '-compression_level', '6',
+        '-compression_level', '3',
         '-q:v', '75',
         '-an',
-        '-vsync', '0',
         outputPath,
       ]);
 
