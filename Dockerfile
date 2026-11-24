@@ -18,10 +18,10 @@ RUN npm install --omit=dev
 # Salin seluruh kode sumber proyek dengan kepemilikan user non-root (UID 1000)
 COPY --chown=node:node . .
 
-# Beralih ke user non-root (syarat keamanan Hugging Face Spaces & best practice VPS)
+# Beralih ke user non-root (best practice keamanan container)
 USER node
 
-# Expose port 7860 sesuai standar Hugging Face Spaces untuk health-check UptimeRobot
+# Expose port 7860 untuk endpoint HTTP health-check
 EXPOSE 7860
 
 # Jalankan aplikasi bot

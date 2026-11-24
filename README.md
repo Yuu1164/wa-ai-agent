@@ -8,7 +8,7 @@ AI Agent WhatsApp berbasis Node.js yang menggunakan **Baileys** (Pairing Code), 
 - **Otak AI (Gemini API)**: Menggunakan model Gemini untuk membalas pesan secara kontekstual.
 - **Memori Percakapan & Auth State di TiDB Serverless**: Menyimpan kredensial sesi Baileys (`baileys_auth_state`) dan riwayat pesan terakhir (`MEMORY_LIMIT`) di database TiDB Serverless (MySQL-compatible).
 - **Pembuat Stiker**: Konversi media menjadi stiker WhatsApp menggunakan `ffmpeg-static` dan `node-webpmux`.
-- **HTTP Health Check Server**: Endpoint HTTP bawaan (default port `7860`) untuk kebutuhan monitoring atau deployment di platform seperti Hugging Face Spaces.
+- **HTTP Health Check Server**: Endpoint HTTP bawaan (default port `7860`) untuk kebutuhan monitoring status bot.
 - **Siap Docker**: Dilengkapi `Dockerfile` untuk kemudahan deployment.
 
 ## Prasyarat
@@ -29,6 +29,7 @@ wa-bot/
 │   ├── memory.js          # Manajemen memori percakapan
 │   ├── sticker.js         # Pembuat stiker WhatsApp
 │   └── tidbAuthState.js   # Penyimpanan auth state Baileys di TiDB
+├── .dockerignore          # Daftar file yang diabaikan saat build Docker
 ├── .env.example           # Contoh konfigurasi environment variable
 ├── Dockerfile             # Konfigurasi container Docker
 ├── package.json
@@ -69,7 +70,7 @@ wa-bot/
 
 ## Deployment (Docker)
 
-Project ini sudah menyertakan `Dockerfile` dan secara default menggunakan port `7860` (kompatibel dengan Hugging Face Spaces):
+Project ini sudah menyertakan `Dockerfile` dan secara default menggunakan port `7860`:
 
 ```bash
 docker build -t wa-ai-agent .
