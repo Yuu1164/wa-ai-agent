@@ -1,6 +1,9 @@
 // Memuat file .env jika dijalankan di komputer lokal atau Oracle Cloud VPS
 require('dotenv').config();
 
+const dns = require('dns');
+const net = require('net');
+const https = require('https');
 const http = require('http');
 const pino = require('pino');
 const { Boom } = require('@hapi/boom');
@@ -17,6 +20,14 @@ const { useTiDBAuthState } = require('./tidbAuthState');
 const { getRecentMessages, saveMessage, clearChatMemory } = require('./memory');
 const { askGemini } = require('./gemini');
 const { createWhatsAppSticker } = require('./sticker');
+
+// --- Fix Jaringan Node.js 22 di Container Cloud (Paksa IPv4) ---
+// Mencegah error ENETUNREACH IPv6 & ETIMEDOUT saat mengunduh gambar/GIF dari mmg.whatsapp.net
+dns.setDefaultResultOrder('ipv4first');
+if (typeof net.setDefaultAutoSelectFamily === 'function') {
+  net.setDefaultAutoSelectFamily(false);
+}
+const ipv4HttpsAgent = new https.Agent({ family: 4, keepAlive: true });
 
 // --- Konfigurasi Dasar ---
 const PORT = Number(process.env.PORT || 7860);
@@ -121,7 +132,7 @@ function extractContextInfo(unwrapped) {
 }
 
 /**
- * 5. Mengambil angka ID bersih dari JID WhatsApp (baik format 628xxx:12@s.whatsapp.net maupun 12345:12@lid)
+ * 5. Mengambil angka ID bersih dari JID WhatsApp (format 628xxx:12@s.whatsapp.net maupun 12345:12@lid)
  */
 function normalizeJidUser(jid) {
   if (!jid || typeof jid !== 'string') return '';
@@ -179,14 +190,47 @@ function detectStickerMedia(unwrapped) {
 }
 
 /**
- * 8. Menangani perintah /gif (kirim langsung dengan caption /gif ATAU reply media dengan /gif)
+ * 8. Mengunduh media WhatsApp dengan paksa IPv4 & percobaan ulang otomatis (retry)
+ */
+async function downloadMediaWithRetry(sock, targetMsg, retries = 2) {
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await downloadMediaMessage(
+        targetMsg,
+        'buffer',
+        {
+          httpsAgent: ipv4HttpsAgent,
+          timeout: 25000,
+        },
+        {
+          logger: baileysLogger,
+          reuploadRequest: sock.updateMediaMessage,
+        }
+      );
+    } catch (err) {
+      lastError = err;
+      console.warn(
+        `[STICKER] Gagal unduh media (percobaan ${attempt}/${retries}):`,
+        err.code || err.message
+      );
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
+  }
+  throw lastError;
+}
+
+/**
+ * 9. Menangani perintah /sticker (kirim langsung dengan caption /sticker ATAU reply media dengan /sticker)
  */
 async function handleStickerCommand(sock, msg, unwrapped, contextInfo, chatJid) {
-  // Cek apakah pesan saat ini mengandung media langsung
+  // Cek apakah pesan saat ini mengandung gambar/GIF secara langsung
   let mediaInfo = detectStickerMedia(unwrapped);
   let targetDownloadMsg = msg;
 
-  // Jika tidak ada media di pesan utama, cek apakah user sedang me-reply sebuah gambar/GIF
+  // Jika tidak ada media di pesan utama, cek apakah user sedang me-reply gambar/PNG/GIF
   if (!mediaInfo && contextInfo.quotedMessage) {
     const unwrappedQuoted = unwrapMessage(contextInfo.quotedMessage);
     mediaInfo = detectStickerMedia(unwrappedQuoted);
@@ -207,16 +251,16 @@ async function handleStickerCommand(sock, msg, unwrapped, contextInfo, chatJid) 
       chatJid,
       {
         text:
-          'Cara pakai */gif*:\n' +
-          '1. Kirim gambar (PNG/JPG) atau GIF/video pendek dengan caption `/gif`, *atau*\n' +
-          '2. *Reply* gambar/GIF yang sudah ada di chat lalu ketik `/gif`.',
+          'Cara pakai */sticker*:\n' +
+          '1. Kirim gambar (PNG/JPG) atau GIF/video pendek dengan caption `/sticker`, *atau*\n' +
+          '2. *Reply* gambar/PNG/GIF yang sudah ada di chat lalu ketik `/sticker`.',
       },
       { quoted: msg }
     );
     return;
   }
 
-  // Batasi video yang terlalu panjang (> 30 detik) agar tidak boros RAM & bandwidth server gratis
+  // Batasi video yang terlalu panjang (> 30 detik) agar tidak membebani RAM server
   if (mediaInfo.seconds > 30) {
     await sock.sendMessage(
       chatJid,
@@ -228,16 +272,8 @@ async function handleStickerCommand(sock, msg, unwrapped, contextInfo, chatJid) 
 
   await sock.sendPresenceUpdate('composing', chatJid);
 
-  // Unduh media dari server WhatsApp menjadi Buffer
-  const mediaBuffer = await downloadMediaMessage(
-    targetDownloadMsg,
-    'buffer',
-    {},
-    {
-      logger: baileysLogger,
-      reuploadRequest: sock.updateMediaMessage,
-    }
-  );
+  // Unduh media dari server WhatsApp menggunakan jalur IPv4
+  const mediaBuffer = await downloadMediaWithRetry(sock, targetDownloadMsg, 2);
 
   // Konversi menjadi stiker WebP 512x512 dengan nama pack "Inventory Random"
   const stickerBuffer = await createWhatsAppSticker(mediaBuffer, {
@@ -250,11 +286,11 @@ async function handleStickerCommand(sock, msg, unwrapped, contextInfo, chatJid) 
 }
 
 /**
- * 9. Mengecek apakah pesan di dalam grup memicu bot:
- *    - Prefix /ai
- *    - Teks @bot atau @BotPromeks
- *    - Mention resmi WhatsApp (baik nomor 628xxx maupun @lid)
- *    - Reply langsung ke pesan yang dikirim oleh bot
+ * 10. Mengecek apakah pesan di dalam grup memicu bot:
+ *     - Prefix /ai
+ *     - Teks @bot atau @BotPromeks
+ *     - Mention resmi WhatsApp (baik nomor 628xxx maupun @lid)
+ *     - Reply langsung ke pesan yang dikirim oleh bot
  */
 function parseGroupTrigger(rawText, contextInfo, sock) {
   const botIds = getBotIdentifiers(sock);
@@ -295,7 +331,7 @@ function parseGroupTrigger(rawText, contextInfo, sock) {
 }
 
 /**
- * 10. Fungsi Utama untuk Menjalankan Koneksi WhatsApp Baileys
+ * 11. Fungsi Utama untuk Menjalankan Koneksi WhatsApp Baileys
  */
 async function startWhatsAppBot() {
   botStatus.whatsapp = 'connecting';
@@ -402,9 +438,9 @@ async function startWhatsAppBot() {
         const isGroup = chatJid.endsWith('@g.us');
         const senderName = msg.pushName || 'Pengguna';
 
-        // --- 1. Perintah Pembuat Stiker (/gif) — aktif di DM maupun Grup tanpa perlu mention ---
-        if (/^\/gif(\s|$)/i.test(rawText)) {
-          console.log(`[STICKER] ${isGroup ? 'GRUP' : 'DM'} | ${senderName} meminta /gif`);
+        // --- 1. Perintah Pembuat Stiker (/sticker atau /stiker) — aktif di DM & Grup ---
+        if (/^\/(sticker|stiker)(\s|$)/i.test(rawText)) {
+          console.log(`[STICKER] ${isGroup ? 'GRUP' : 'DM'} | ${senderName} meminta /sticker`);
           await handleStickerCommand(sock, msg, unwrapped, contextInfo, chatJid);
           continue;
         }
@@ -418,7 +454,7 @@ async function startWhatsAppBot() {
                 '*Menu BotPromeks AI*\n\n' +
                 '• *Chat AI (DM):* Langsung kirim pesan apa saja\n' +
                 '• *Chat AI (Grup):* Pakai `/ai <pertanyaan>`, tag `@BotPromeks`, ketik `@bot`, atau *reply* pesan bot\n' +
-                '• *Buat Stiker:* Kirim atau *reply* foto/PNG/GIF dengan caption `/gif` (Pack: _Inventory Random_)\n' +
+                '• *Buat Stiker:* Kirim atau *reply* gambar (PNG/JPG) atau GIF dengan `/sticker` (Pack: _Inventory Random_)\n' +
                 '• *Hapus Memori:* Ketik `/reset` (atau `/ai reset` di grup)',
             },
             { quoted: msg }
@@ -432,7 +468,6 @@ async function startWhatsAppBot() {
         if (isGroup) {
           const parsed = parseGroupTrigger(rawText, contextInfo, sock);
           if (!parsed.triggered) {
-            // Log diagnosa singkat agar mudah dicek di Logs Abasthan jika ada format mention baru
             if (rawText.includes('@') || parsed.mentionedJids.length > 0) {
               console.log(
                 `[GRUP-DEBUG] Diabaikan | text="${rawText}" | mentioned=[${parsed.mentionedJids.join(', ')}] | botIds=[${parsed.botIds.join(', ')}]`
@@ -442,6 +477,14 @@ async function startWhatsAppBot() {
           }
 
           promptText = parsed.cleanPrompt;
+
+          // Dukung juga jika di grup seseorang mengetik "@BotPromeks /sticker"
+          if (/^\/(sticker|stiker)(\s|$)/i.test(promptText)) {
+            console.log(`[STICKER] GRUP | ${senderName} meminta /sticker (via mention)`);
+            await handleStickerCommand(sock, msg, unwrapped, contextInfo, chatJid);
+            continue;
+          }
+
           if (!promptText) {
             await sock.sendMessage(
               chatJid,
@@ -507,7 +550,7 @@ async function startWhatsAppBot() {
 }
 
 /**
- * 11. Titik Masuk Utama Aplikasi
+ * 12. Titik Masuk Utama Aplikasi
  */
 async function main() {
   startHealthServer();
